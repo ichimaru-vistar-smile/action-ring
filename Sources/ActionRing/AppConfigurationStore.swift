@@ -26,7 +26,8 @@ final class AppConfigurationStore: ObservableObject {
         groups.map { group in
             RingAppGroup(
                 direction: group.direction,
-                apps: catalogService.resolveApps(from: group.items)
+                apps: catalogService.resolveApps(from: group.items),
+                groupedAppIDs: group.groupedAppIDs
             )
         }
     }
@@ -96,6 +97,14 @@ final class AppConfigurationStore: ObservableObject {
     func remove(id: UUID, from direction: RingGroupDirection) {
         mutateGroup(direction) { group in
             group.items.removeAll { $0.id == id }
+        }
+        persist()
+    }
+
+    func setGroupedAppIDs(_ ids: [UUID], for direction: RingGroupDirection) {
+        mutateGroup(direction) { group in
+            group.groupedAppIDs = ids
+            group.validateAppGroup()
         }
         persist()
     }
@@ -260,7 +269,7 @@ final class AppConfigurationStore: ObservableObject {
     }
 
     private var currentDocumentVersion: String {
-        "v1.9.9"
+        "v1.10.0"
     }
 
     private func mutateGroup(
@@ -274,6 +283,7 @@ final class AppConfigurationStore: ObservableObject {
         var group = groups[index]
         operation(&group)
         group.items = Array(group.items.prefix(AppGroupConfiguration.maxItemCount))
+        group.validateAppGroup()
         groups[index] = group
     }
 }

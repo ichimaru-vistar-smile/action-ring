@@ -92,14 +92,20 @@ struct AppGroupConfiguration: Codable, Identifiable, Equatable, Sendable {
 
     var direction: RingGroupDirection
     var items: [AppConfiguration]
+    var groupedAppIDs: [UUID]
 
     var id: RingGroupDirection {
         direction
     }
 
-    init(direction: RingGroupDirection, items: [AppConfiguration] = []) {
+    init(
+        direction: RingGroupDirection,
+        items: [AppConfiguration] = [],
+        groupedAppIDs: [UUID] = []
+    ) {
         self.direction = direction
         self.items = Array(items.prefix(Self.maxItemCount))
+        self.groupedAppIDs = Self.validatedGroupIDs(groupedAppIDs, in: self.items)
     }
 
     static func emptyGroups() -> [AppGroupConfiguration] {
@@ -119,9 +125,42 @@ struct AppGroupConfiguration: Codable, Identifiable, Equatable, Sendable {
 
     static func normalized(_ groups: [AppGroupConfiguration]) -> [AppGroupConfiguration] {
         RingGroupDirection.allCases.map { direction in
-            let items = groups.first(where: { $0.direction == direction })?.items ?? []
-            return AppGroupConfiguration(direction: direction, items: items)
+            let group = groups.first(where: { $0.direction == direction })
+            return AppGroupConfiguration(
+                direction: direction,
+                items: group?.items ?? [],
+                groupedAppIDs: group?.groupedAppIDs ?? []
+            )
         }
+    }
+
+    mutating func validateAppGroup() {
+        groupedAppIDs = Self.validatedGroupIDs(groupedAppIDs, in: items)
+    }
+
+    private static func validatedGroupIDs(_ ids: [UUID], in items: [AppConfiguration]) -> [UUID] {
+        let selectedIndexes = items.indices.filter { ids.contains(items[$0].id) }
+        guard selectedIndexes.count >= 2,
+              selectedIndexes.count == ids.count,
+              selectedIndexes.last! - selectedIndexes.first! + 1 == selectedIndexes.count else {
+            return []
+        }
+
+        return selectedIndexes.map { items[$0].id }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case direction
+        case items
+        case groupedAppIDs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        direction = try container.decode(RingGroupDirection.self, forKey: .direction)
+        items = Array(try container.decodeIfPresent([AppConfiguration].self, forKey: .items)?.prefix(Self.maxItemCount) ?? [])
+        let decodedGroupIDs = try container.decodeIfPresent([UUID].self, forKey: .groupedAppIDs) ?? []
+        groupedAppIDs = Self.validatedGroupIDs(decodedGroupIDs, in: items)
     }
 }
 

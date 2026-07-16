@@ -56,6 +56,9 @@ final class ActionRingController {
         ) { [weak self] app in
             self?.catalogService.launchOrActivate(app)
             self?.overlayController.hide(restorePreviousApplication: false)
+        } onSelectGroup: { [weak self] group in
+            self?.catalogService.launchGroup(group.groupedApps)
+            self?.overlayController.hide(restorePreviousApplication: false)
         } onSearchSelect: { [weak self] app in
             self?.catalogService.launchOrActivate(app)
             self?.overlayController.hide(restorePreviousApplication: false)

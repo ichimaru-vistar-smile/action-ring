@@ -111,14 +111,57 @@ final class AppCatalogService {
         )
     }
 
-    private func openApplication(at url: URL) {
+    func launchGroup(_ apps: [RingApp]) {
+        guard let first = apps.first else {
+            return
+        }
+
+        let launchGroup = DispatchGroup()
+
+        for app in apps.dropFirst() {
+            launchGroup.enter()
+            wakeGroupMember(app) {
+                launchGroup.leave()
+            }
+        }
+
+        launchGroup.notify(queue: .main) { [weak self] in
+            self?.launchOrActivate(first)
+        }
+    }
+
+    private func wakeGroupMember(_ app: RingApp, completion: @escaping @Sendable () -> Void) {
+        guard FileManager.default.fileExists(atPath: app.url.path) else {
+            NSSound.beep()
+            completion()
+            return
+        }
+
+        if let runningApplication = runningApplication(for: app) {
+            if runningApplication.activate(options: [.activateAllWindows]) {
+                completion()
+            } else {
+                openApplication(at: app.url, completion: completion)
+            }
+            return
+        }
+
+        openApplication(at: app.url, completion: completion)
+    }
+
+    private func openApplication(
+        at url: URL,
+        activates: Bool = true,
+        completion: @escaping @Sendable () -> Void = {}
+    ) {
         let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
+        configuration.activates = activates
 
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
             if error != nil {
                 NSSound.beep()
             }
+            completion()
         }
     }
 

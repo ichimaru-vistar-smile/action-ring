@@ -16,6 +16,8 @@ private enum RingMetrics {
     static let groupSpacing: CGFloat = 52
     static let cardSize: CGFloat = 48
     static let iconSize: CGFloat = 40
+    static let groupIconScale: CGFloat = 0.7
+    static let groupIconSize: CGFloat = iconSize * groupIconScale
     static let ambientGlowSize: CGFloat = 112
     static let arcGapToCenterHole: CGFloat = 1
     static let arcGlowWidth: CGFloat = 18
@@ -55,10 +57,12 @@ struct RingView: View {
     let catalogService: AppCatalogService
     let shortcutLabel: String
     let onSelect: @MainActor (RingApp) -> Void
+    let onSelectGroup: @MainActor (RingAppGroup) -> Void
     let onSearchSelect: @MainActor (DiscoveredApp) -> Void
     let onDismiss: @MainActor () -> Void
 
     @State private var hoveredAppID: RingApp.ID?
+    @State private var hoveredSingleUnitDirection: RingGroupDirection?
     @State private var contentVisible = false
     @State private var arcThicknessProgress: CGFloat = 0
     @State private var arcSettleProgress: CGFloat = 0
@@ -70,22 +74,117 @@ struct RingView: View {
 
     private var appSlots: [RingAppSlot] {
         var entryIndex = 0
+        var slots: [RingAppSlot] = []
 
-        return groups.flatMap { group in
-            Array(group.apps.enumerated()).map { index, app in
-                defer { entryIndex += 1 }
+        for group in groups {
+            let groupedIDs = Set(group.groupedAppIDs)
+            let groupedApps = group.apps.filter { groupedIDs.contains($0.id) }
 
-                return RingAppSlot(
-                    app: app,
-                    accentColor: group.direction.accentColor,
-                    entryIndex: entryIndex,
-                    center: position(
-                        for: group.direction,
-                        index: index,
-                        count: group.apps.count
+            guard groupedApps.count >= 2 else {
+                for (index, app) in group.apps.enumerated() {
+                    slots.append(
+                        RingAppSlot(
+                            app: app,
+                            accentColor: group.direction.accentColor,
+                            entryIndex: entryIndex,
+                            center: position(for: group.direction, index: index, count: group.apps.count)
+                        )
                     )
-                )
+                    entryIndex += 1
+                }
+                continue
             }
+
+            var units: [RingLayoutUnit] = []
+            var insertedGroup = false
+            for app in group.apps {
+                if groupedIDs.contains(app.id) {
+                    if !insertedGroup {
+                        units.append(.group(groupedApps))
+                        insertedGroup = true
+                    }
+                } else {
+                    units.append(.app(app))
+                }
+            }
+
+            for (unitIndex, unit) in units.enumerated() {
+                let unitCenter = position(
+                    for: group.direction,
+                    index: unitIndex,
+                    count: units.count,
+                    spacing: units.count > 1 ? 78 : RingMetrics.groupSpacing,
+                    radius: RingMetrics.groupRadius
+                )
+
+                switch unit {
+                case .app(let app):
+                    slots.append(
+                        RingAppSlot(
+                            app: app,
+                            accentColor: group.direction.accentColor,
+                            entryIndex: entryIndex,
+                            center: unitCenter
+                        )
+                    )
+                    entryIndex += 1
+                case .group(let apps):
+                    for (index, app) in apps.enumerated() {
+                        slots.append(
+                            RingAppSlot(
+                                app: app,
+                                accentColor: group.direction.accentColor,
+                                entryIndex: entryIndex,
+                                center: stackedPosition(
+                                    around: unitCenter,
+                                    index: index,
+                                    count: apps.count
+                                )
+                            )
+                        )
+                        entryIndex += 1
+                    }
+                }
+            }
+        }
+
+        return slots
+    }
+
+    private var groupHighlights: [RingGroupHighlight] {
+        groups.compactMap { group in
+            let groupedSlots = appSlots.filter { group.groupedAppIDs.contains($0.app.id) }
+            guard groupedSlots.count >= 2 else {
+                return nil
+            }
+
+            let center = CGPoint(
+                x: groupedSlots.map(\.center.x).reduce(0, +) / CGFloat(groupedSlots.count),
+                y: groupedSlots.map(\.center.y).reduce(0, +) / CGFloat(groupedSlots.count)
+            )
+            let diameter: CGFloat = groupedSlots.count > 2 ? 76 : 64
+
+            return RingGroupHighlight(
+                group: group,
+                accentColor: group.direction.accentColor,
+                center: center,
+                diameter: diameter
+            )
+        }
+    }
+
+    private var standaloneAppSlots: [RingAppSlot] {
+        let groupedIDs = Set(groups.flatMap(\.groupedAppIDs))
+        return appSlots.filter { !groupedIDs.contains($0.app.id) }
+    }
+
+    private var singleAppGroups: [RingAppGroup] {
+        groups.filter { $0.apps.count == 1 && $0.groupedAppIDs.isEmpty }
+    }
+
+    private var singleGroupUnitGroups: [RingAppGroup] {
+        groups.filter { group in
+            group.apps.count >= 2 && group.groupedApps.count == group.apps.count
         }
     }
 
@@ -102,6 +201,7 @@ struct RingView: View {
         .frame(width: RingMetrics.overlayWidth, height: RingMetrics.canvasSize)
         .onAppear {
             hoveredAppID = nil
+            hoveredSingleUnitDirection = nil
             searchText = ""
             selectedSearchResultID = nil
             appSearchIndex.loadIfNeeded()
@@ -149,16 +249,20 @@ struct RingView: View {
                 }
 
                 let nextHoveredAppID = hoveredAppID(at: location)
-                guard nextHoveredAppID != hoveredAppID else {
+                let nextHoveredDirection = singleUnitDirection(at: location)
+                guard nextHoveredAppID != hoveredAppID
+                        || nextHoveredDirection != hoveredSingleUnitDirection else {
                     return
                 }
 
                 withAnimation(.easeOut(duration: 0.11)) {
                     hoveredAppID = nextHoveredAppID
+                    hoveredSingleUnitDirection = nextHoveredDirection
                 }
             case .ended:
                 withAnimation(.easeOut(duration: 0.11)) {
                     hoveredAppID = nil
+                    hoveredSingleUnitDirection = nil
                 }
             }
         }
@@ -235,11 +339,49 @@ struct RingView: View {
             backgroundRing
                 .allowsHitTesting(false)
 
-            ForEach(appSlots, id: \.app.id) { slot in
+            ForEach(singleAppGroups) { group in
+                if let app = group.apps.first {
+                    SingleUnitDirectionButton(
+                        direction: group.direction,
+                        accentColor: group.direction.accentColor,
+                        isHovered: hoveredSingleUnitDirection == group.direction,
+                        helpText: "Open \(app.name)"
+                    ) {
+                        onSelect(app)
+                    }
+                }
+            }
+
+            ForEach(singleGroupUnitGroups) { group in
+                SingleUnitDirectionButton(
+                    direction: group.direction,
+                    accentColor: group.direction.accentColor,
+                    isHovered: hoveredSingleUnitDirection == group.direction,
+                    helpText: "Open \(group.groupedApps.map(\.name).joined(separator: ", "))"
+                ) {
+                    onSelectGroup(group)
+                }
+            }
+
+            ForEach(groupHighlights) { highlight in
+                RingGroupButton(
+                    highlight: highlight,
+                    slots: appSlots.filter { highlight.group.groupedAppIDs.contains($0.app.id) },
+                    isDirectionHovered: hoveredSingleUnitDirection == highlight.group.direction,
+                    onSelect: onSelectGroup
+                )
+                .position(highlight.center)
+                .scaleEffect(contentVisible ? 1 : 0.92)
+                .opacity(contentVisible ? 1 : 0)
+                .animation(.spring(response: 0.26, dampingFraction: 0.84), value: contentVisible)
+            }
+
+            ForEach(standaloneAppSlots, id: \.app.id) { slot in
                 RingIconButton(
                     app: slot.app,
                     accentColor: slot.accentColor,
-                    isHovered: hoveredAppID == slot.app.id,
+                    isHovered: hoveredAppID == slot.app.id
+                        || isSingleAppDirectionHovered(for: slot.app.id),
                     onSelect: onSelect
                 )
                 .frame(width: RingMetrics.cardSize, height: RingMetrics.cardSize)
@@ -796,12 +938,14 @@ struct RingView: View {
     private func position(
         for direction: RingGroupDirection,
         index: Int,
-        count: Int
+        count: Int,
+        spacing: CGFloat = RingMetrics.groupSpacing,
+        radius: CGFloat = RingMetrics.groupRadius
     ) -> CGPoint {
-        let sweep = appGroupSweep(forCount: count, radius: RingMetrics.groupRadius)
+        let sweep = appGroupSweep(forCount: count, radius: radius, spacing: spacing)
 
         guard count > 1 else {
-            return pointOnCircle(radius: RingMetrics.groupRadius, angle: direction.ringAngle)
+            return pointOnCircle(radius: radius, angle: direction.ringAngle)
         }
 
         let step = sweep / Double(count - 1)
@@ -811,7 +955,20 @@ struct RingView: View {
         let angleStep = direction.usesReversedArcOrdering ? -step : step
         let angle = startAngle + (angleStep * Double(index))
 
-        return pointOnCircle(radius: RingMetrics.groupRadius, angle: angle)
+        return pointOnCircle(radius: radius, angle: angle)
+    }
+
+    private func stackedPosition(
+        around center: CGPoint,
+        index: Int,
+        count: Int
+    ) -> CGPoint {
+        let offset = (CGFloat(index) - CGFloat(count - 1) / 2) * (RingMetrics.groupIconSize / 2)
+
+        return CGPoint(
+            x: center.x + offset,
+            y: center.y + offset
+        )
     }
 
     private func anchorPoint(for direction: RingGroupDirection, center: CGPoint) -> CGPoint {
@@ -851,9 +1008,38 @@ struct RingView: View {
     }
 
     private func hoveredAppID(at location: CGPoint) -> RingApp.ID? {
-        appSlots.first(where: { slot in
+        standaloneAppSlots.first(where: { slot in
             slot.hitFrame.contains(location)
         })?.app.id
+    }
+
+    private func isSingleAppDirectionHovered(for appID: RingApp.ID) -> Bool {
+        singleAppGroups.contains { group in
+            group.direction == hoveredSingleUnitDirection && group.apps.first?.id == appID
+        }
+    }
+
+    private func singleUnitDirection(at location: CGPoint) -> RingGroupDirection? {
+        let dx = location.x - canvasCenter.x
+        let dy = location.y - canvasCenter.y
+        let distance = sqrt((dx * dx) + (dy * dy))
+        guard distance >= RingMetrics.centerDiameter / 2,
+              distance <= RingMetrics.outerDiameter / 2 else {
+            return nil
+        }
+
+        let pointerAngle = normalizedAngle(atan2(dy, dx) * (180 / .pi) + 90)
+        let eligibleDirections = Set(singleAppGroups.map(\.direction) + singleGroupUnitGroups.map(\.direction))
+
+        return eligibleDirections.first { direction in
+            let difference = abs(normalizedAngle(pointerAngle - direction.ringAngle + 180) - 180)
+            return difference <= 43
+        }
+    }
+
+    private func normalizedAngle(_ angle: Double) -> Double {
+        let remainder = angle.truncatingRemainder(dividingBy: 360)
+        return remainder >= 0 ? remainder : remainder + 360
     }
 
     private func iconEntranceOffset(for slot: RingAppSlot) -> CGSize {
@@ -949,12 +1135,16 @@ struct RingView: View {
         return min(max(baseSweep, minimumSweep), 86)
     }
 
-    private func appGroupSweep(forCount count: Int, radius: CGFloat) -> Double {
+    private func appGroupSweep(
+        forCount count: Int,
+        radius: CGFloat,
+        spacing: CGFloat = RingMetrics.groupSpacing
+    ) -> Double {
         guard count > 1 else {
             return 0
         }
 
-        let step = angularSpan(for: RingMetrics.groupSpacing, radius: radius)
+        let step = angularSpan(for: spacing, radius: radius)
         return step * Double(count - 1)
     }
 
@@ -962,6 +1152,12 @@ struct RingView: View {
         let clampedRatio = min(max(chord / (2 * max(radius, 1)), 0), 0.98)
         return Double(2 * asin(clampedRatio) * (180 / .pi))
     }
+}
+
+@MainActor
+private enum RingLayoutUnit {
+    case app(RingApp)
+    case group([RingApp])
 }
 
 @MainActor
@@ -978,6 +1174,162 @@ private struct RingAppSlot {
             width: RingMetrics.cardSize,
             height: RingMetrics.cardSize
         )
+    }
+}
+
+@MainActor
+private struct SingleUnitDirectionButton: View {
+    let direction: RingGroupDirection
+    let accentColor: Color
+    let isHovered: Bool
+    let helpText: String
+    let onSelect: @MainActor () -> Void
+
+    var body: some View {
+        let shape = RingDirectionSectorShape(
+            startAngle: direction.ringAngle - 43,
+            endAngle: direction.ringAngle + 43,
+            innerRadius: RingMetrics.centerDiameter / 2,
+            outerRadius: RingMetrics.outerDiameter / 2
+        )
+
+        Button {
+            onSelect()
+        } label: {
+            ZStack {
+                shape
+                    .fill(accentColor.opacity(isHovered ? 0.13 : 0.001))
+
+                shape
+                    .stroke(
+                        accentColor.opacity(isHovered ? 0.58 : 0),
+                        style: StrokeStyle(lineWidth: 1.5, lineJoin: .round)
+                    )
+            }
+            .shadow(color: accentColor.opacity(isHovered ? 0.34 : 0), radius: 14)
+            .contentShape(shape)
+            .frame(width: RingMetrics.canvasSize, height: RingMetrics.canvasSize)
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+    }
+}
+
+private struct RingDirectionSectorShape: Shape {
+    let startAngle: Double
+    let endAngle: Double
+    let innerRadius: CGFloat
+    let outerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        var path = Path()
+        path.addArc(
+            center: center,
+            radius: outerRadius,
+            startAngle: .degrees(startAngle - 90),
+            endAngle: .degrees(endAngle - 90),
+            clockwise: false
+        )
+        path.addArc(
+            center: center,
+            radius: innerRadius,
+            startAngle: .degrees(endAngle - 90),
+            endAngle: .degrees(startAngle - 90),
+            clockwise: true
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct RingGroupHighlight: Identifiable {
+    let group: RingAppGroup
+    let accentColor: Color
+    let center: CGPoint
+    let diameter: CGFloat
+
+    var id: RingGroupDirection {
+        group.direction
+    }
+}
+
+@MainActor
+private struct RingGroupButton: View {
+    let highlight: RingGroupHighlight
+    let slots: [RingAppSlot]
+    let isDirectionHovered: Bool
+    let onSelect: @MainActor (RingAppGroup) -> Void
+
+    @State private var isHovered = false
+
+    private var showsHoverEffect: Bool {
+        isHovered || isDirectionHovered
+    }
+
+    private var emphasizesShadow: Bool {
+        isHovered && !isDirectionHovered
+    }
+
+    var body: some View {
+        Button {
+            onSelect(highlight.group)
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(highlight.accentColor.opacity(showsHoverEffect ? 0.18 : 0.11))
+                    .overlay {
+                        Circle()
+                            .stroke(
+                                highlight.accentColor.opacity(showsHoverEffect ? 0.72 : 0.42),
+                                lineWidth: showsHoverEffect ? 1.5 : 1
+                            )
+                    }
+                    .shadow(
+                        color: highlight.accentColor.opacity(emphasizesShadow ? 0.46 : 0.28),
+                        radius: emphasizesShadow ? 10 : 7
+                    )
+                    .frame(width: highlight.diameter, height: highlight.diameter)
+                    .opacity(emphasizesShadow ? 1 : 0)
+
+                ForEach(slots, id: \.app.id) { slot in
+                    Image(nsImage: slot.app.icon)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: RingMetrics.groupIconSize, height: RingMetrics.groupIconSize)
+                        .position(
+                            x: buttonSize.width / 2 + slot.center.x - highlight.center.x,
+                            y: buttonSize.height / 2 + slot.center.y - highlight.center.y
+                        )
+                }
+            }
+            .frame(width: buttonSize.width, height: buttonSize.height)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(RingGroupButtonStyle(isHovered: showsHoverEffect))
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
+        .help("Open \(highlight.group.groupedApps.map(\.name).joined(separator: ", "))")
+    }
+
+    private var buttonSize: CGSize {
+        CGSize(width: highlight.diameter + 14, height: highlight.diameter + 14)
+    }
+}
+
+private struct RingGroupButtonStyle: ButtonStyle {
+    let isHovered: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : (isHovered ? 1.025 : 1))
+            .brightness(configuration.isPressed ? 0.04 : 0)
+            .animation(.spring(response: 0.18, dampingFraction: 0.82), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.12), value: isHovered)
     }
 }
 

@@ -22,6 +22,7 @@ final class RingOverlayController: NSObject, NSWindowDelegate {
         shortcutLabel: String,
         positionMode: RingOverlayPositionMode,
         onSelect: @MainActor @escaping (RingApp) -> Void,
+        onSelectGroup: @MainActor @escaping (RingAppGroup) -> Void,
         onSearchSelect: @MainActor @escaping (DiscoveredApp) -> Void
     ) {
         let panel = self.panel ?? makePanel()
@@ -34,6 +35,7 @@ final class RingOverlayController: NSObject, NSWindowDelegate {
                 catalogService: catalogService,
                 shortcutLabel: shortcutLabel,
                 onSelect: onSelect,
+                onSelectGroup: onSelectGroup,
                 onSearchSelect: onSearchSelect,
                 onDismiss: { [weak self] in
                     self?.hide()

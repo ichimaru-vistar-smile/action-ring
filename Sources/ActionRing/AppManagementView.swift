@@ -315,7 +315,7 @@ struct AppManagementView: View {
 private struct GroupDirectionCard: View {
     let direction: RingGroupDirection
     let items: [AppConfiguration]
-    let store: AppConfigurationStore
+    @ObservedObject var store: AppConfigurationStore
     let onAdd: @MainActor (RingGroupDirection) -> Void
 
     var body: some View {
@@ -336,6 +336,10 @@ private struct GroupDirectionCard: View {
                     onAdd(direction)
                 }
                 .disabled(!store.canAdd(to: direction))
+            }
+
+            if items.count >= 2 {
+                appGroupEditor
             }
 
             VStack(spacing: 10) {
@@ -365,6 +369,96 @@ private struct GroupDirectionCard: View {
         (0..<AppGroupConfiguration.maxItemCount).map { index in
             SlotModel(slotIndex: index, item: index < items.count ? items[index] : nil)
         }
+    }
+
+    private var groupChoices: [AppGroupChoice] {
+        guard items.count >= 2 else {
+            return [AppGroupChoice(title: "None", ids: [])]
+        }
+
+        var choices = [
+            AppGroupChoice(title: "None", ids: []),
+            AppGroupChoice(title: "\(items[0].name) + \(items[1].name)", ids: [items[0].id, items[1].id])
+        ]
+
+        if items.count == 3 {
+            choices.append(
+                AppGroupChoice(title: "\(items[1].name) + \(items[2].name)", ids: [items[1].id, items[2].id])
+            )
+            choices.append(AppGroupChoice(title: "All three apps", ids: items.map(\.id)))
+        }
+
+        return choices
+    }
+
+    private var selectedGroupIDs: [UUID] {
+        store.group(for: direction).groupedAppIDs
+    }
+
+    private var selectedGroupTitle: String {
+        groupChoices.first(where: { $0.ids == selectedGroupIDs })?.title ?? "Unknown group"
+    }
+
+    private var appGroupEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("App group")
+                        .font(.system(size: 12, weight: .semibold))
+
+                    Text(selectedGroupIDs.isEmpty ? "No group" : selectedGroupTitle)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                if selectedGroupIDs.isEmpty {
+                    Menu("Create Group") {
+                        groupChoiceButtons
+                    }
+                } else {
+                    if groupChoices.filter({ !$0.ids.isEmpty && $0.ids != selectedGroupIDs }).isEmpty == false {
+                        Menu("Edit") {
+                            groupChoiceButtons
+                        }
+                    }
+
+                    Button("Remove Group", role: .destructive) {
+                        store.setGroupedAppIDs([], for: direction)
+                    }
+                }
+            }
+
+            Text("One group per direction. Grouped apps must be next to each other.")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.035))
+        )
+    }
+
+    @ViewBuilder
+    private var groupChoiceButtons: some View {
+        ForEach(groupChoices.filter { !$0.ids.isEmpty }) { choice in
+            Button(choice.title) {
+                store.setGroupedAppIDs(choice.ids, for: direction)
+            }
+            .disabled(choice.ids == selectedGroupIDs)
+        }
+    }
+}
+
+private struct AppGroupChoice: Identifiable {
+    let title: String
+    let ids: [UUID]
+
+    var id: String {
+        ids.map(\.uuidString).joined(separator: ":")
     }
 }
 
