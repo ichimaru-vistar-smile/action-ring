@@ -1,9 +1,16 @@
 import AppKit
 import CoreGraphics
+import OSLog
 
 @MainActor
 final class AppCatalogService {
     private let finderBundleIdentifier = "com.apple.finder"
+    private let groupWakeVerificationAttempts = 8
+    private let groupWakeVerificationInterval: TimeInterval = 0.15
+    private nonisolated static let logger = Logger(
+        subsystem: "app.action-ring.desktop",
+        category: "AppLaunch"
+    )
 
     private struct DefaultAppDescriptor {
         let bundleIdentifier: String
@@ -116,52 +123,158 @@ final class AppCatalogService {
             return
         }
 
-        let launchGroup = DispatchGroup()
+        let secondaryApps = Array(apps.dropFirst())
+        Self.logger.notice("Launching app group with \(apps.count) members; final focus: \(first.name, privacy: .public)")
 
-        for app in apps.dropFirst() {
-            launchGroup.enter()
-            wakeGroupMember(app) {
-                launchGroup.leave()
-            }
-        }
-
-        launchGroup.notify(queue: .main) { [weak self] in
+        wakeGroupMembers(secondaryApps, at: 0) { [weak self] in
             self?.launchOrActivate(first)
         }
     }
 
-    private func wakeGroupMember(_ app: RingApp, completion: @escaping @Sendable () -> Void) {
+    private func wakeGroupMembers(
+        _ apps: [RingApp],
+        at index: Int,
+        completion: @escaping @MainActor @Sendable () -> Void
+    ) {
+        guard index < apps.count else {
+            completion()
+            return
+        }
+
+        wakeGroupMember(apps[index]) { [weak self] in
+            self?.wakeGroupMembers(apps, at: index + 1, completion: completion) ?? completion()
+        }
+    }
+
+    private func wakeGroupMember(
+        _ app: RingApp,
+        completion: @escaping @MainActor @Sendable () -> Void
+    ) {
         guard FileManager.default.fileExists(atPath: app.url.path) else {
+            Self.logger.error("Cannot wake group member \(app.name, privacy: .public): application is missing at \(app.url.path, privacy: .public)")
             NSSound.beep()
             completion()
             return
         }
 
-        if let runningApplication = runningApplication(for: app) {
+        requestGroupMemberWake(app) { [weak self] in
+            guard let self else {
+                completion()
+                return
+            }
+
+            self.verifyGroupMemberWake(
+                app,
+                attemptsRemaining: self.groupWakeVerificationAttempts,
+                allowsRetry: true,
+                completion: completion
+            )
+        }
+    }
+
+    private func requestGroupMemberWake(
+        _ app: RingApp,
+        completion: @escaping @MainActor @Sendable () -> Void
+    ) {
+        guard app.bundleIdentifier != finderBundleIdentifier else {
+            openApplication(at: app.url) { _ in completion() }
+            return
+        }
+
+        guard let runningApplication = runningApplication(for: app) else {
+            openApplication(at: app.url) { _ in completion() }
+            return
+        }
+
+        if runningApplication.isHidden || hasVisibleWindow(for: runningApplication) {
             if runningApplication.activate(options: [.activateAllWindows]) {
                 completion()
             } else {
-                openApplication(at: app.url, completion: completion)
+                openApplication(at: app.url) { _ in completion() }
+            }
+        } else {
+            // A running application can have no on-screen window (for example,
+            // after its last window was closed). Reopening it is more reliable
+            // than treating a successful activation request as a completed wake.
+            openApplication(at: app.url) { _ in completion() }
+        }
+    }
+
+    private func verifyGroupMemberWake(
+        _ app: RingApp,
+        attemptsRemaining: Int,
+        allowsRetry: Bool,
+        completion: @escaping @MainActor @Sendable () -> Void
+    ) {
+        if let runningApplication = runningApplication(for: app),
+           runningApplication.isActive,
+           hasVisibleWindow(for: runningApplication) {
+            Self.logger.notice("Group member became active with a visible window: \(app.name, privacy: .public)")
+
+            // Becoming active and presenting the window are separate AppKit
+            // transitions. Give the member a brief turn before another app in
+            // the group takes focus.
+            DispatchQueue.main.asyncAfter(deadline: .now() + groupWakeVerificationInterval) {
+                completion()
             }
             return
         }
 
-        openApplication(at: app.url, completion: completion)
+        guard attemptsRemaining > 0 else {
+            if allowsRetry {
+                Self.logger.notice("Retrying group member wake: \(app.name, privacy: .public)")
+                requestGroupMemberWake(app) { [weak self] in
+                    guard let self else {
+                        completion()
+                        return
+                    }
+
+                    self.verifyGroupMemberWake(
+                        app,
+                        attemptsRemaining: self.groupWakeVerificationAttempts,
+                        allowsRetry: false,
+                        completion: completion
+                    )
+                }
+            } else {
+                Self.logger.error("Group member did not become active with a visible window after retry: \(app.name, privacy: .public)")
+                completion()
+            }
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + groupWakeVerificationInterval) { [weak self] in
+            self?.verifyGroupMemberWake(
+                app,
+                attemptsRemaining: attemptsRemaining - 1,
+                allowsRetry: allowsRetry,
+                completion: completion
+            ) ?? completion()
+        }
     }
 
     private func openApplication(
         at url: URL,
         activates: Bool = true,
-        completion: @escaping @Sendable () -> Void = {}
+        completion: @escaping @MainActor @Sendable (Bool) -> Void = { _ in }
     ) {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = activates
+        let applicationPath = url.path
 
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
-            if error != nil {
-                NSSound.beep()
+            let succeeded = error == nil
+
+            if let error {
+                Self.logger.error("Failed to open \(applicationPath, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
-            completion()
+
+            DispatchQueue.main.async {
+                if !succeeded {
+                    NSSound.beep()
+                }
+                completion(succeeded)
+            }
         }
     }
 
