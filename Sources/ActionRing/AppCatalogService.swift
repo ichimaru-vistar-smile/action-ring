@@ -5,8 +5,7 @@ import OSLog
 @MainActor
 final class AppCatalogService {
     private let finderBundleIdentifier = "com.apple.finder"
-    private let groupWakeVerificationAttempts = 8
-    private let groupWakeVerificationInterval: TimeInterval = 0.15
+    private let groupedAppWakeInterval: TimeInterval = 0.12
     private nonisolated static let logger = Logger(
         subsystem: "app.action-ring.desktop",
         category: "AppLaunch"
@@ -119,137 +118,27 @@ final class AppCatalogService {
     }
 
     func launchGroup(_ apps: [RingApp]) {
-        guard let first = apps.first else {
+        guard !apps.isEmpty else {
             return
         }
 
-        let secondaryApps = Array(apps.dropFirst())
-        Self.logger.notice("Launching app group with \(apps.count) members; final focus: \(first.name, privacy: .public)")
-
-        wakeGroupMembers(secondaryApps, at: 0) { [weak self] in
-            self?.launchOrActivate(first)
-        }
+        Self.logger.notice("Launching app group with \(apps.count) staggered wake requests and no forced final focus")
+        wakeGroupMembers(apps, at: 0)
     }
 
-    private func wakeGroupMembers(
-        _ apps: [RingApp],
-        at index: Int,
-        completion: @escaping @MainActor @Sendable () -> Void
-    ) {
+    private func wakeGroupMembers(_ apps: [RingApp], at index: Int) {
         guard index < apps.count else {
-            completion()
             return
         }
 
-        wakeGroupMember(apps[index]) { [weak self] in
-            self?.wakeGroupMembers(apps, at: index + 1, completion: completion) ?? completion()
-        }
-    }
+        launchOrActivate(apps[index])
 
-    private func wakeGroupMember(
-        _ app: RingApp,
-        completion: @escaping @MainActor @Sendable () -> Void
-    ) {
-        guard FileManager.default.fileExists(atPath: app.url.path) else {
-            Self.logger.error("Cannot wake group member \(app.name, privacy: .public): application is missing at \(app.url.path, privacy: .public)")
-            NSSound.beep()
-            completion()
+        guard index + 1 < apps.count else {
             return
         }
 
-        requestGroupMemberWake(app) { [weak self] in
-            guard let self else {
-                completion()
-                return
-            }
-
-            self.verifyGroupMemberWake(
-                app,
-                attemptsRemaining: self.groupWakeVerificationAttempts,
-                allowsRetry: true,
-                completion: completion
-            )
-        }
-    }
-
-    private func requestGroupMemberWake(
-        _ app: RingApp,
-        completion: @escaping @MainActor @Sendable () -> Void
-    ) {
-        guard app.bundleIdentifier != finderBundleIdentifier else {
-            openApplication(at: app.url) { _ in completion() }
-            return
-        }
-
-        guard let runningApplication = runningApplication(for: app) else {
-            openApplication(at: app.url) { _ in completion() }
-            return
-        }
-
-        if runningApplication.isHidden || hasVisibleWindow(for: runningApplication) {
-            if runningApplication.activate(options: [.activateAllWindows]) {
-                completion()
-            } else {
-                openApplication(at: app.url) { _ in completion() }
-            }
-        } else {
-            // A running application can have no on-screen window (for example,
-            // after its last window was closed). Reopening it is more reliable
-            // than treating a successful activation request as a completed wake.
-            openApplication(at: app.url) { _ in completion() }
-        }
-    }
-
-    private func verifyGroupMemberWake(
-        _ app: RingApp,
-        attemptsRemaining: Int,
-        allowsRetry: Bool,
-        completion: @escaping @MainActor @Sendable () -> Void
-    ) {
-        if let runningApplication = runningApplication(for: app),
-           runningApplication.isActive,
-           hasVisibleWindow(for: runningApplication) {
-            Self.logger.notice("Group member became active with a visible window: \(app.name, privacy: .public)")
-
-            // Becoming active and presenting the window are separate AppKit
-            // transitions. Give the member a brief turn before another app in
-            // the group takes focus.
-            DispatchQueue.main.asyncAfter(deadline: .now() + groupWakeVerificationInterval) {
-                completion()
-            }
-            return
-        }
-
-        guard attemptsRemaining > 0 else {
-            if allowsRetry {
-                Self.logger.notice("Retrying group member wake: \(app.name, privacy: .public)")
-                requestGroupMemberWake(app) { [weak self] in
-                    guard let self else {
-                        completion()
-                        return
-                    }
-
-                    self.verifyGroupMemberWake(
-                        app,
-                        attemptsRemaining: self.groupWakeVerificationAttempts,
-                        allowsRetry: false,
-                        completion: completion
-                    )
-                }
-            } else {
-                Self.logger.error("Group member did not become active with a visible window after retry: \(app.name, privacy: .public)")
-                completion()
-            }
-            return
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + groupWakeVerificationInterval) { [weak self] in
-            self?.verifyGroupMemberWake(
-                app,
-                attemptsRemaining: attemptsRemaining - 1,
-                allowsRetry: allowsRetry,
-                completion: completion
-            ) ?? completion()
+        DispatchQueue.main.asyncAfter(deadline: .now() + groupedAppWakeInterval) { [weak self] in
+            self?.wakeGroupMembers(apps, at: index + 1)
         }
     }
 

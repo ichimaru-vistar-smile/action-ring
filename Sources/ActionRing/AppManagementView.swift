@@ -16,6 +16,7 @@ struct AppManagementView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 shortcutSection
+                screenEdgeSection
                 appearanceSection
                 startupSection
                 groupEditor
@@ -134,6 +135,48 @@ struct AppManagementView: View {
             Text(store.overlayPositionMode.description)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+
+    private var screenEdgeSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Screen Edge Actions")
+                        .font(.system(size: 16, weight: .semibold))
+
+                    Text("Hold the selected key and touch a screen edge to open that direction's default app or group.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Hold Key")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+
+                    Picker("Hold Key", selection: screenEdgeHoldKeyBinding) {
+                        ForEach(ScreenEdgeHoldKey.allCases) { key in
+                            Text("\(key.symbol) \(key.title)").tag(key)
+                        }
+                    }
+                    .frame(width: 180)
+                }
+
+                Text("Set the default target separately inside each direction below. Directions without a default target stay inactive.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(18)
         .background(
@@ -261,6 +304,17 @@ struct AppManagementView: View {
         )
     }
 
+    private var screenEdgeHoldKeyBinding: Binding<ScreenEdgeHoldKey> {
+        Binding(
+            get: {
+                store.screenEdgeHoldKey
+            },
+            set: { key in
+                store.updateScreenEdgeHoldKey(key)
+            }
+        )
+    }
+
     private func modifierBinding(_ modifier: HotKeyModifier) -> Binding<Bool> {
         Binding(
             get: {
@@ -341,6 +395,8 @@ private struct GroupDirectionCard: View {
             if items.count >= 2 {
                 appGroupEditor
             }
+
+            defaultTargetEditor
 
             VStack(spacing: 10) {
                 ForEach(slotModels, id: \.slotIndex) { slot in
@@ -439,6 +495,52 @@ private struct GroupDirectionCard: View {
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.white.opacity(0.035))
+        )
+    }
+
+    private var defaultTargetEditor: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Screen edge default")
+                    .font(.system(size: 12, weight: .semibold))
+
+                Text("Used while holding \(store.screenEdgeHoldKey.symbol) at the \(direction.title.lowercased()) edge.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Picker("Default target", selection: defaultTargetBinding) {
+                Text("Not Set").tag(DirectionDefaultTarget?.none)
+
+                ForEach(items) { item in
+                    Text(item.name).tag(DirectionDefaultTarget?.some(.app(item.id)))
+                }
+
+                if !selectedGroupIDs.isEmpty {
+                    Text("Group: \(selectedGroupTitle)").tag(DirectionDefaultTarget?.some(.group))
+                }
+            }
+            .labelsHidden()
+            .frame(width: 210)
+            .disabled(items.isEmpty)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.035))
+        )
+    }
+
+    private var defaultTargetBinding: Binding<DirectionDefaultTarget?> {
+        Binding(
+            get: {
+                store.group(for: direction).defaultTarget
+            },
+            set: { target in
+                store.setDefaultTarget(target, for: direction)
+            }
         )
     }
 

@@ -27,7 +27,7 @@ enum RingOverlayPositionMode: String, Codable, CaseIterable, Identifiable, Senda
     }
 }
 
-enum RingGroupDirection: String, Codable, CaseIterable, Identifiable, Sendable {
+enum RingGroupDirection: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
     case up
     case right
     case down
@@ -87,12 +87,51 @@ struct AppConfiguration: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+enum DirectionDefaultTarget: Codable, Equatable, Hashable, Sendable {
+    case app(UUID)
+    case group
+
+    private enum TargetType: String, Codable {
+        case app
+        case group
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case appID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        switch try container.decode(TargetType.self, forKey: .type) {
+        case .app:
+            self = .app(try container.decode(UUID.self, forKey: .appID))
+        case .group:
+            self = .group
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case let .app(appID):
+            try container.encode(TargetType.app, forKey: .type)
+            try container.encode(appID, forKey: .appID)
+        case .group:
+            try container.encode(TargetType.group, forKey: .type)
+        }
+    }
+}
+
 struct AppGroupConfiguration: Codable, Identifiable, Equatable, Sendable {
     static let maxItemCount = 3
 
     var direction: RingGroupDirection
     var items: [AppConfiguration]
     var groupedAppIDs: [UUID]
+    var defaultTarget: DirectionDefaultTarget?
 
     var id: RingGroupDirection {
         direction
@@ -101,11 +140,17 @@ struct AppGroupConfiguration: Codable, Identifiable, Equatable, Sendable {
     init(
         direction: RingGroupDirection,
         items: [AppConfiguration] = [],
-        groupedAppIDs: [UUID] = []
+        groupedAppIDs: [UUID] = [],
+        defaultTarget: DirectionDefaultTarget? = nil
     ) {
         self.direction = direction
         self.items = Array(items.prefix(Self.maxItemCount))
         self.groupedAppIDs = Self.validatedGroupIDs(groupedAppIDs, in: self.items)
+        self.defaultTarget = Self.validatedDefaultTarget(
+            defaultTarget,
+            items: self.items,
+            groupedAppIDs: self.groupedAppIDs
+        )
     }
 
     static func emptyGroups() -> [AppGroupConfiguration] {
@@ -129,13 +174,19 @@ struct AppGroupConfiguration: Codable, Identifiable, Equatable, Sendable {
             return AppGroupConfiguration(
                 direction: direction,
                 items: group?.items ?? [],
-                groupedAppIDs: group?.groupedAppIDs ?? []
+                groupedAppIDs: group?.groupedAppIDs ?? [],
+                defaultTarget: group?.defaultTarget
             )
         }
     }
 
-    mutating func validateAppGroup() {
+    mutating func validate() {
         groupedAppIDs = Self.validatedGroupIDs(groupedAppIDs, in: items)
+        defaultTarget = Self.validatedDefaultTarget(
+            defaultTarget,
+            items: items,
+            groupedAppIDs: groupedAppIDs
+        )
     }
 
     private static func validatedGroupIDs(_ ids: [UUID], in items: [AppConfiguration]) -> [UUID] {
@@ -149,10 +200,26 @@ struct AppGroupConfiguration: Codable, Identifiable, Equatable, Sendable {
         return selectedIndexes.map { items[$0].id }
     }
 
+    private static func validatedDefaultTarget(
+        _ target: DirectionDefaultTarget?,
+        items: [AppConfiguration],
+        groupedAppIDs: [UUID]
+    ) -> DirectionDefaultTarget? {
+        switch target {
+        case let .app(appID):
+            return items.contains(where: { $0.id == appID }) ? target : nil
+        case .group:
+            return groupedAppIDs.count >= 2 ? target : nil
+        case nil:
+            return nil
+        }
+    }
+
     private enum CodingKeys: String, CodingKey {
         case direction
         case items
         case groupedAppIDs
+        case defaultTarget
     }
 
     init(from decoder: Decoder) throws {
@@ -161,6 +228,11 @@ struct AppGroupConfiguration: Codable, Identifiable, Equatable, Sendable {
         items = Array(try container.decodeIfPresent([AppConfiguration].self, forKey: .items)?.prefix(Self.maxItemCount) ?? [])
         let decodedGroupIDs = try container.decodeIfPresent([UUID].self, forKey: .groupedAppIDs) ?? []
         groupedAppIDs = Self.validatedGroupIDs(decodedGroupIDs, in: items)
+        defaultTarget = Self.validatedDefaultTarget(
+            try container.decodeIfPresent(DirectionDefaultTarget.self, forKey: .defaultTarget),
+            items: items,
+            groupedAppIDs: groupedAppIDs
+        )
     }
 }
 

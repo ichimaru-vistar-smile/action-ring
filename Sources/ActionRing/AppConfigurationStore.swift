@@ -52,6 +52,10 @@ final class AppConfigurationStore: ObservableObject {
         preferences.overlayPosition
     }
 
+    var screenEdgeHoldKey: ScreenEdgeHoldKey {
+        preferences.screenEdgeHoldKey
+    }
+
     var configurationDirectoryURL: URL {
         let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return baseURL.appendingPathComponent("ActionRing", isDirectory: true)
@@ -104,7 +108,13 @@ final class AppConfigurationStore: ObservableObject {
     func setGroupedAppIDs(_ ids: [UUID], for direction: RingGroupDirection) {
         mutateGroup(direction) { group in
             group.groupedAppIDs = ids
-            group.validateAppGroup()
+        }
+        persist()
+    }
+
+    func setDefaultTarget(_ target: DirectionDefaultTarget?, for direction: RingGroupDirection) {
+        mutateGroup(direction) { group in
+            group.defaultTarget = target
         }
         persist()
     }
@@ -202,6 +212,15 @@ final class AppConfigurationStore: ObservableObject {
         persist()
     }
 
+    func updateScreenEdgeHoldKey(_ key: ScreenEdgeHoldKey) {
+        guard preferences.screenEdgeHoldKey != key else {
+            return
+        }
+
+        preferences.screenEdgeHoldKey = key
+        persist()
+    }
+
     func setHotKeyModifier(_ modifier: HotKeyModifier, enabled: Bool) {
         var modifiers = preferences.hotKey.modifiers
 
@@ -269,7 +288,7 @@ final class AppConfigurationStore: ObservableObject {
     }
 
     private var currentDocumentVersion: String {
-        "v1.10.0"
+        "v1.12.0"
     }
 
     private func mutateGroup(
@@ -283,7 +302,7 @@ final class AppConfigurationStore: ObservableObject {
         var group = groups[index]
         operation(&group)
         group.items = Array(group.items.prefix(AppGroupConfiguration.maxItemCount))
-        group.validateAppGroup()
+        group.validate()
         groups[index] = group
     }
 }

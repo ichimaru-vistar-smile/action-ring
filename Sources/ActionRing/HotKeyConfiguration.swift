@@ -60,6 +60,43 @@ enum HotKeyModifier: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
+enum ScreenEdgeHoldKey: String, Codable, CaseIterable, Identifiable, Sendable {
+    case control
+    case option
+    case command
+    case shift
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .control:
+            "Control"
+        case .option:
+            "Option"
+        case .command:
+            "Command"
+        case .shift:
+            "Shift"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .control:
+            "⌃"
+        case .option:
+            "⌥"
+        case .command:
+            "⌘"
+        case .shift:
+            "⇧"
+        }
+    }
+}
+
 struct HotKeyConfiguration: Codable, Equatable, Sendable {
     var keyCode: UInt32
     var modifiers: [HotKeyModifier]
@@ -89,11 +126,36 @@ struct HotKeyConfiguration: Codable, Equatable, Sendable {
 struct ActionRingPreferences: Codable, Equatable, Sendable {
     var hotKey: HotKeyConfiguration
     var overlayPosition: RingOverlayPositionMode
+    var screenEdgeHoldKey: ScreenEdgeHoldKey
+
+    init(
+        hotKey: HotKeyConfiguration,
+        overlayPosition: RingOverlayPositionMode,
+        screenEdgeHoldKey: ScreenEdgeHoldKey
+    ) {
+        self.hotKey = hotKey
+        self.overlayPosition = overlayPosition
+        self.screenEdgeHoldKey = screenEdgeHoldKey
+    }
 
     static let `default` = ActionRingPreferences(
         hotKey: .default,
-        overlayPosition: .followsMouse
+        overlayPosition: .followsMouse,
+        screenEdgeHoldKey: .control
     )
+
+    private enum CodingKeys: String, CodingKey {
+        case hotKey
+        case overlayPosition
+        case screenEdgeHoldKey
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hotKey = try container.decodeIfPresent(HotKeyConfiguration.self, forKey: .hotKey) ?? .default
+        overlayPosition = try container.decodeIfPresent(RingOverlayPositionMode.self, forKey: .overlayPosition) ?? .followsMouse
+        screenEdgeHoldKey = try container.decodeIfPresent(ScreenEdgeHoldKey.self, forKey: .screenEdgeHoldKey) ?? .control
+    }
 }
 
 struct HotKeyKeyOption: Identifiable, Hashable, Sendable {

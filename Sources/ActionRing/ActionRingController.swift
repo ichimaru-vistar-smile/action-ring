@@ -4,6 +4,7 @@ import Combine
 @MainActor
 final class ActionRingController {
     private let overlayController = RingOverlayController()
+    private let screenEdgeTriggerManager = ScreenEdgeTriggerManager()
     private let catalogService: AppCatalogService
     private let appSearchIndex = AppSearchIndex()
     private let configurationStore: AppConfigurationStore
@@ -33,6 +34,10 @@ final class ActionRingController {
             self?.toggleRing()
         }
 
+        screenEdgeTriggerManager.onTrigger = { [weak self] direction in
+            self?.launchDefaultTarget(for: direction)
+        }
+
         configurationStore.$preferences
             .map(\.hotKey)
             .removeDuplicates()
@@ -40,6 +45,22 @@ final class ActionRingController {
                 if !HotKeyManager.shared.register(configuration) {
                     _ = HotKeyManager.shared.register(.default)
                 }
+            }
+            .store(in: &cancellables)
+
+        configurationStore.$preferences
+            .map(\.screenEdgeHoldKey)
+            .removeDuplicates()
+            .combineLatest(
+                configurationStore.$groups
+                    .map { groups in groups.contains(where: { $0.defaultTarget != nil }) }
+                    .removeDuplicates()
+            )
+            .sink { [weak self] holdKey, hasConfiguredTarget in
+                self?.screenEdgeTriggerManager.configure(
+                    holdKey: holdKey,
+                    isEnabled: hasConfiguredTarget
+                )
             }
             .store(in: &cancellables)
     }
@@ -98,6 +119,35 @@ final class ActionRingController {
             overlayController.hide()
         } else {
             showRing()
+        }
+    }
+
+    private func launchDefaultTarget(for direction: RingGroupDirection) {
+        let configuredGroup = configurationStore.group(for: direction)
+
+        switch configuredGroup.defaultTarget {
+        case let .app(appID):
+            guard let configuration = configuredGroup.items.first(where: { $0.id == appID }),
+                  let app = catalogService.resolveApps(from: [configuration]).first else {
+                NSSound.beep()
+                return
+            }
+
+            overlayController.hide(restorePreviousApplication: false)
+            catalogService.launchOrActivate(app)
+
+        case .group:
+            guard let ringGroup = configurationStore.ringGroups().first(where: { $0.direction == direction }),
+                  ringGroup.groupedApps.count >= 2 else {
+                NSSound.beep()
+                return
+            }
+
+            overlayController.hide(restorePreviousApplication: false)
+            catalogService.launchGroup(ringGroup.groupedApps)
+
+        case nil:
+            break
         }
     }
 
